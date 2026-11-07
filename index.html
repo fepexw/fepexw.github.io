@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#05060f">
+<title>Trading-Bots</title>
+<style>
+:root{--bg:#05060f;--card:#0d1024;--line:#232a52;--txt:#e8ebff;--dim:#8a91c2;--acc:#7c8cff;--neg:#ff5d7a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{background:radial-gradient(1200px 700px at 70% -10%,#1b1f4a 0%,transparent 60%),radial-gradient(900px 600px at -10% 110%,#2a1240 0%,transparent 55%),var(--bg)}
+#login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px}
+.box{width:100%;max-width:360px;background:rgba(13,16,36,.85);border:1px solid var(--line);border-radius:18px;padding:28px 24px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.box h1{margin:0 0 4px;font-size:22px;letter-spacing:.5px}
+.box p{margin:0 0 20px;color:var(--dim);font-size:13px}
+.box input[type=password]{width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:#070917;color:var(--txt);font-size:16px;outline:none}
+.box input[type=password]:focus{border-color:var(--acc)}
+.box label{display:flex;gap:8px;align-items:center;margin:14px 0 18px;color:var(--dim);font-size:13px;cursor:pointer}
+.box button{width:100%;padding:12px;border:0;border-radius:10px;background:linear-gradient(90deg,#5b6cff,#a35bff);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+.box button:disabled{opacity:.6;cursor:wait}
+#err{color:var(--neg);font-size:13px;min-height:18px;margin-top:12px}
+#stars{position:fixed;inset:0;pointer-events:none}
+#frames iframe{position:fixed;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+#frames iframe.hidden{visibility:hidden}
+#loading{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:var(--dim);font-size:14px}
+#handle{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:10;width:14px;height:54px;border-radius:8px 0 0 8px;background:rgba(124,140,255,.35);border:0;cursor:pointer;display:none;padding:0}
+#handle:hover{background:rgba(124,140,255,.8)}
+#handle.bad{background:rgba(255,93,122,.7)}
+#menu{position:fixed;right:20px;top:50%;transform:translateY(-50%);z-index:11;display:none;min-width:220px;background:rgba(13,16,36,.97);border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+#menu button{display:block;width:100%;text-align:left;padding:10px 12px;border:0;background:none;color:var(--txt);font-size:14px;border-radius:8px;cursor:pointer}
+#menu button:hover{background:#1a1f45}
+#menu button.on{color:var(--acc);font-weight:600}
+#menu .info{padding:8px 12px 4px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-top:6px}
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+
+<div id="login" style="display:none">
+  <form class="box" id="form" autocomplete="on">
+    <h1>Trading-Bots</h1>
+    <p>Privates Dashboard. Nur mit Passwort lesbar.</p>
+    <input type="text" name="username" value="fepe" autocomplete="username" hidden>
+    <input type="password" id="pw" autocomplete="current-password" placeholder="Passwort" required autofocus>
+    <label><input type="checkbox" id="remember" checked> Auf diesem Gerät angemeldet bleiben</label>
+    <button id="go" type="submit">Anmelden</button>
+    <div id="err"></div>
+  </form>
+</div>
+
+<div id="loading">Lade Dashboard …</div>
+<div id="frames"></div>
+<button id="handle" title="Menü"></button>
+<div id="menu">
+  <button data-v="pc">🖥️ PC-Ansicht</button>
+  <button data-v="handy">📱 Handy-Ansicht</button>
+  <button data-v="auto">🔄 Automatisch (je nach Gerät)</button>
+  <button id="now">⟳ Jetzt neu laden</button>
+  <button id="logout">🚪 Abmelden</button>
+  <div class="info" id="info">–</div>
+</div>
+
+<script>
+"use strict";
+// Muss mit site/encrypt.mjs uebereinstimmen.
+const SALT = "fepexw-trading-dashboard-v1", ITER = 600000, POLL_MS = 60000;
+const KEY_NAME = "dash_key", VIEW_NAME = "dash_view";
+const $ = id => document.getElementById(id);
+let key = null, view = null, version = null, built = null, current = null, busy = false, lastOk = Date.now();
+let gen = 0; // erhoeht sich beim Abmelden: alte, noch laufende Ladevorgaenge werden verworfen
+
+// ---------- Sterne im Hintergrund (nur Login) ----------
+(function stars(){const c=$("stars"),x=c.getContext("2d");function d(){c.width=innerWidth;c.height=innerHeight;x.clearRect(0,0,c.width,c.height);
+ for(let i=0;i<220;i++){x.globalAlpha=Math.random()*.8+.1;x.fillStyle="#fff";const r=Math.random()*1.3;x.beginPath();x.arc(Math.random()*c.width,Math.random()*c.height,r,0,7);x.fill()}}
+ d();addEventListener("resize",d)})();
+
+// ---------- Schluessel ----------
+const b64 = u8 => btoa(String.fromCharCode(...u8));
+const unb64 = s => Uint8Array.from(atob(s), ch => ch.charCodeAt(0));
+async function deriveKey(pw){
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2", salt:new TextEncoder().encode(SALT), iterations:ITER, hash:"SHA-256"},
+    base, {name:"AES-GCM", length:256}, true, ["decrypt"]);
+}
+async function saveKey(k, remember){
+  const raw = b64(new Uint8Array(await crypto.subtle.exportKey("raw", k)));
+  (remember ? localStorage : sessionStorage).setItem(KEY_NAME, raw);
+}
+async function loadKey(){
+  const raw = localStorage.getItem(KEY_NAME) || sessionStorage.getItem(KEY_NAME);
+  if(!raw) return null;
+  try{ return await crypto.subtle.importKey("raw", unb64(raw), {name:"AES-GCM"}, true, ["decrypt"]); }catch(e){ return null; }
+}
+function forgetKey(){ localStorage.removeItem(KEY_NAME); sessionStorage.removeItem(KEY_NAME); key = null; }
+
+// ---------- Ansicht (PC / Handy) ----------
+function autoView(){
+  const w = Math.min(screen.width, innerWidth);
+  return (w < 820 || (matchMedia("(pointer: coarse)").matches && w < 1100)) ? "handy" : "pc";
+}
+function chosenView(){ const v = new URLSearchParams(location.search).get("v") || localStorage.getItem(VIEW_NAME);
+  return (v === "pc" || v === "handy") ? v : autoView(); }
+
+// ---------- Laden + Entschluesseln ----------
+class WrongKey extends Error {}
+async function fetchVersion(){
+  const r = await fetch("version.json?t=" + Date.now(), {cache:"no-store"});
+  if(!r.ok) throw new Error("version.json " + r.status);
+  return r.json();
+}
+async function decryptView(k, v, ver){
+  const r = await fetch(v + ".enc?v=" + encodeURIComponent(ver || Date.now()), {cache:"no-store"});
+  if(!r.ok) throw new Error(v + ".enc " + r.status);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  let gz;
+  try{ gz = await crypto.subtle.decrypt({name:"AES-GCM", iv:buf.slice(0,12)}, k, buf.slice(12)); }
+  catch(e){ throw new WrongKey(); }
+  const html = await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  return URL.createObjectURL(new Blob([html], {type:"text/html;charset=utf-8"}));
+}
+
+// Neue Version unsichtbar laden, dann austauschen (kein Flackern, Seite + Scroll bleiben).
+async function show(v, ver){
+  const g = gen;
+  const url = await decryptView(key, v, ver);
+  if(g !== gen){ URL.revokeObjectURL(url); return; }
+  let hash = "", sx = 0, sy = 0;
+  if(current && current.view === v){
+    try{ const w = current.frame.contentWindow; hash = w.location.hash || ""; sx = w.scrollX; sy = w.scrollY; }catch(e){}
+  }
+  const f = document.createElement("iframe");
+  f.className = "hidden";
+  f.title = "Dashboard";
+  f.setAttribute("allow", "fullscreen");
+  await new Promise(res => { f.onload = res; f.src = url + hash; $("frames").appendChild(f); });
+  if(g !== gen){ f.remove(); URL.revokeObjectURL(url); return; }
+  try{ if(sx || sy) f.contentWindow.scrollTo(sx, sy); }catch(e){}
+  f.classList.remove("hidden");
+  if(current){ current.frame.remove(); URL.revokeObjectURL(current.url); }
+  current = {frame:f, url, view:v};
+  view = v;
+  $("loading").style.display = "none";
+  $("handle").style.display = "block";
+  setTimeout(() => { try{ f.contentWindow.focus(); }catch(e){} }, 50);
+}
+
+async function refresh(force){
+  if(busy || !key) return;
+  busy = true;
+  try{
+    const info = await fetchVersion();
+    built = info.built;
+    const want = chosenView();
+    if(force || info.version !== version || want !== view){
+      const g = gen;
+      await show(want, info.version);
+      if(g === gen) version = info.version;
+    }
+    lastOk = Date.now();
+    $("handle").classList.remove("bad");
+  }catch(e){
+    console.warn(e);
+    if(e instanceof WrongKey){ forgetKey(); stopApp(); showLogin("Das Passwort wurde geändert. Bitte neu anmelden."); }
+    else if(Date.now() - lastOk > 3 * POLL_MS) $("handle").classList.add("bad");
+  }finally{ busy = false; updateInfo(); }
+}
+
+function updateInfo(){
+  const t = built ? new Date(built).toLocaleString("de-CH", {dateStyle:"short", timeStyle:"short"}) : "–";
+  $("info").textContent = "Stand: " + t + " · prüft jede Minute";
+  const saved = localStorage.getItem(VIEW_NAME) || "auto";
+  document.querySelectorAll("#menu [data-v]").forEach(b => b.classList.toggle("on", b.dataset.v === saved));
+}
+
+// ---------- Ablauf ----------
+let timer = null;
+function startApp(){
+  $("login").style.display = "none"; $("stars").style.display = "none";
+  $("loading").style.display = "flex";
+  refresh(true);
+  timer = setInterval(() => refresh(false), POLL_MS);
+}
+function stopApp(){
+  gen++;
+  clearInterval(timer); timer = null;
+  document.querySelectorAll("#frames iframe").forEach(f => f.remove());
+  if(current){ current.frame.remove(); URL.revokeObjectURL(current.url); current = null; }
+  version = null; view = null;
+  $("handle").style.display = "none"; $("menu").style.display = "none"; $("loading").style.display = "none";
+}
+function showLogin(msg){
+  $("stars").style.display = "block"; $("login").style.display = "flex";
+  $("err").textContent = msg || ""; $("pw").value = ""; $("pw").focus();
+}
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const pw = $("pw").value;
+  $("go").disabled = true; $("err").textContent = ""; $("go").textContent = "Prüfe …";
+  try{
+    const k = await deriveKey(pw);
+    const info = await fetchVersion();
+    URL.revokeObjectURL(await decryptView(k, "handy", info.version)); // Probe: richtiges Passwort?
+    key = k;
+    await saveKey(k, $("remember").checked);
+    startApp();
+  }catch(err){
+    $("err").textContent = err instanceof WrongKey ? "Falsches Passwort." : "Fehler beim Laden: " + err.message;
+  }finally{ $("go").disabled = false; $("go").textContent = "Anmelden"; }
+});
+
+$("handle").addEventListener("click", () => { const m = $("menu"); m.style.display = m.style.display === "block" ? "none" : "block"; updateInfo(); });
+document.querySelectorAll("#menu [data-v]").forEach(b => b.addEventListener("click", () => {
+  if(b.dataset.v === "auto") localStorage.removeItem(VIEW_NAME); else localStorage.setItem(VIEW_NAME, b.dataset.v);
+  $("menu").style.display = "none";
+  refresh(false);
+}));
+$("now").addEventListener("click", () => { $("menu").style.display = "none"; refresh(true); });
+$("logout").addEventListener("click", () => { forgetKey(); stopApp(); showLogin("Abgemeldet."); });
+document.addEventListener("visibilitychange", () => { if(!document.hidden) refresh(false); });
+let rt = null;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if(!localStorage.getItem(VIEW_NAME)) refresh(false); }, 800); });
+
+(async () => {
+  if(!window.crypto || !crypto.subtle || !window.DecompressionStream){ showLogin("Dieser Browser ist zu alt. Bitte Chrome, Edge, Firefox oder Safari aktuell nutzen."); return; }
+  key = await loadKey();
+  if(key) startApp(); else showLogin();
+})();
+</script>
+</body>
+</html>
